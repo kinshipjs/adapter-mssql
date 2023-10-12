@@ -1,44 +1,45 @@
 // @ts-check
-import { PreparedStatement, Transaction, Int, VarChar, BigInt as SqlBigInt, Bit, DateTime, ConnectionPool } from 'mssql';
+import mssql from 'mssql';
 
 function getType(val) {
     switch(typeof val) {
-        case "number": return Int;
-        case "string": return VarChar;
-        case "bigint": return SqlBigInt;
-        case "boolean": return Bit;
+        case "number": return mssql.Int;
+        case "string": return mssql.VarChar;
+        case "bigint": return mssql.BigInt;
+        case "boolean": return mssql.Bit;
         case "object": {
             if(val instanceof Date) {
-                return DateTime;
+                return mssql.DateTime;
             }
         }
     }
-    return VarChar;
+    return mssql.VarChar;
 }
 
 /**
  * Executes a prepared statement as a command.
- * @param {import("mssql").ConnectionPool|import("mssql").Transaction} connection
+ * @param {KinshipMsSqlConnectionPool|import("mssql").Transaction} connection
  * @param {string} command 
  * @param {{[key: string]: { type: import('mssql').ISqlTypeFactory, value: any }}} args 
  * @returns {Promise<import('mssql').IProcedureResult<any>|undefined>}
  */
 function executeCommand(connection, command, args={}) {
     return new Promise(async (resolve, reject) => {
-        /** @type {PreparedStatement} */
+        /** @type {mssql.PreparedStatement} */
         let ps;
-        if(connection instanceof Transaction) {
-            ps = new PreparedStatement(connection);
+        if(connection instanceof mssql.Transaction) {
+            ps = new mssql.PreparedStatement(connection);
         } else {
-            ps = new PreparedStatement(connection);
+            ps = new mssql.PreparedStatement(connection.pool);
         }
-        const req = connection.request();
         for(const key in args) {
             ps.input(key, { type: args[key].type });
         }
         ps.prepare(command, err => {
+            console.log("1???");
             const nameToValueMap = Object.fromEntries(Object.keys(args).map(k => [k, args[k].value]));
             ps.execute(nameToValueMap, (err, result) => {
+                console.log("2???");
                 ps.unprepare(err => {
                     reject(err);
                 });
@@ -196,7 +197,7 @@ export function adapter(connection) {
                     return set;
                 },
                 async forTransactionBegin() {
-                    transaction = connection.transaction();
+                    transaction = connection.pool.transaction();
                     await transaction.begin();
                 },
                 async forTransactionEnd(cnn) {
@@ -579,15 +580,16 @@ function getImplicitUpdate({ table, columns, where, implicit }) {
     };
 }
 
-class KinshipMsSqlConnectionPool extends ConnectionPool {
+class KinshipMsSqlConnectionPool {
     /** @type {string} */ schema;
+    /** @type {mssql.ConnectionPool} */ pool;
     
     /**
      * @param {import('mssql').config} config 
      * @param {string} schema
      */
     constructor(config, schema) {
-        super(config);
+        this.pool = new mssql.ConnectionPool(config);
         this.schema = schema;
     }
 }
@@ -596,10 +598,11 @@ class KinshipMsSqlConnectionPool extends ConnectionPool {
  * Creates an MSSQL Connection Pool given a schema for the tables that are intended to be connected to.
  * @param {import('mssql').config} config
  * @param {string=} schema
- * @returns {KinshipMsSqlConnectionPool}
+ * @returns {Promise<KinshipMsSqlConnectionPool>}
  */
-export function createMsSqlPool(config, schema="dbo") {
+export async function createMsSqlPool(config, schema="dbo") {
     if(!schema) schema = "dbo";
     const cp = new KinshipMsSqlConnectionPool(config, schema);
+    await cp.pool.connect();
     return cp;
 }

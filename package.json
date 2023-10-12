@@ -1,0 +1,53 @@
+{
+    "name": "@kinshipjs/mysql2",
+    "version": "0.0.11-development",
+    "homepage": "https://github.com/kinshipjs/adapter-mysql",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/kinshipjs/adapter-mysql"
+    },
+    "description": "MySQL adapter for the Kinship ORM using the NodeJS mysql2 library.",
+    "type": "module",
+    "module": "./dist/index.js",
+    "types": "./dist/types/index.d.ts",
+    "scripts": {
+        "clean": "del /S /Q .\\dist",
+        "build": "npm run clean && npm run build:source && npm run build:types",
+        "build:source": "tsup",
+        "build:types": "tsc",
+        "test": "node ./tests/test.js",
+        "prepack": "npm run build"
+    },
+    "keywords": [
+        "mysql",
+        "typescript",
+        "table",
+        "left join",
+        "query",
+        "insert",
+        "update",
+        "delete"
+    ],
+    "author": "Travis Zuleger",
+    "license": "(MIT OR Apache-2.0)",
+    "dependencies": {
+        "@kinshipjs/core": "^0.0.26-development",
+        "mssql": "^10.0.1"
+    },
+    "devDependencies": {
+        "@types/mssql": "^9.1.1",
+        "@types/node": "^20.3.1",
+        "dotenv": "^16.0.3",
+        "tsup": "^7.2.0",
+        "typescript": "^4.9.5"
+    },
+    "files": [
+        "dist/**/*"
+    ],
+    "exports": {
+        ".": {
+            "import": "./dist/index.js",
+            "types": "./dist/types/index.d.js"
+        }
+    }
+}

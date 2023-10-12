@@ -1,0 +1,11 @@
+node_modules/
+tests/
+data/
+src/
+.github/
+.env
+.gitignore
+package-lock.json
+output.txt
+tsconfig.json
+tsup.config.js

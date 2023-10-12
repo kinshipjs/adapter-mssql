@@ -1,0 +1,7 @@
+node_modules
+/dist
+/dist/*
+/dist/**/*
+package-lock.json
+.env
+output.txt

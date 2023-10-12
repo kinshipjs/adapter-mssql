@@ -1,12 +1,26 @@
 // @ts-check
-import { PreparedStatement, Transaction, Int, VarChar, BigInt as SqlBigInt, Bit, Date, DateTime } from 'mssql';
+import { PreparedStatement, Transaction, Int, VarChar, BigInt as SqlBigInt, Bit, DateTime, ConnectionPool } from 'mssql';
 
+function getType(val) {
+    switch(typeof val) {
+        case "number": return Int;
+        case "string": return VarChar;
+        case "bigint": return SqlBigInt;
+        case "boolean": return Bit;
+        case "object": {
+            if(val instanceof Date) {
+                return DateTime;
+            }
+        }
+    }
+    return VarChar;
+}
 
 /**
  * Executes a prepared statement as a command.
  * @param {import("mssql").ConnectionPool|import("mssql").Transaction} connection
  * @param {string} command 
- * @param {{[key: string]: { type: import('mssql').ISqlType, value: any }}} args 
+ * @param {{[key: string]: { type: import('mssql').ISqlTypeFactory, value: any }}} args 
  * @returns {Promise<import('mssql').IProcedureResult<any>|undefined>}
  */
 function executeCommand(connection, command, args={}) {
@@ -18,8 +32,9 @@ function executeCommand(connection, command, args={}) {
         } else {
             ps = new PreparedStatement(connection);
         }
+        const req = connection.request();
         for(const key in args) {
-            ps.input(key, args[key].type);
+            ps.input(key, { type: args[key].type });
         }
         ps.prepare(command, err => {
             const nameToValueMap = Object.fromEntries(Object.keys(args).map(k => [k, args[k].value]));
@@ -52,7 +67,7 @@ function escape(tableOrColumn) {
     return `[${tableOrColumn}]`;
 }
 
-/** @type {import('@kinshipjs/core/adapter').InitializeAdapterCallback<import("mssql").ConnectionPool & { schema: string }>} */
+/** @type {import('@kinshipjs/core/adapter').InitializeAdapterCallback<KinshipMsSqlConnectionPool>} */
 export function adapter(connection) {
     /** @type {import('mssql').Transaction=} */
     let transaction;
@@ -71,14 +86,14 @@ export function adapter(connection) {
         execute(scope) {
             return {
                 async forQuery(cmd, args) {
-                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: SqlInt, value: a }]));
+                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
                         if(transaction) {
-                            const results = await executeCommand(transaction, cmd, args);
-                            return /** @type {any} */ (results);
+                            const results = await executeCommand(transaction, cmd, argMap);
+                            return /** @type {any} */ (results?.recordsets);
                         } else {
-                            const results = await executeCommand(connection, cmd, args);
-                            return /** @type {any} */ (results);
+                            const results = await executeCommand(connection, cmd, argMap);
+                            return /** @type {any} */ (results?.recordsets);
                         }
                     } catch(err) {
                         await transaction?.rollback();
@@ -86,52 +101,80 @@ export function adapter(connection) {
                     }
                 },
                 async forInsert(cmd, args) {
+                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
-                        const [result] = /** @type {import('mysql2/promise').ResultSetHeader[]} */ (await connection.execute(cmd, args));
-                        return Array.from(Array(result.affectedRows).keys()).map((_, n) => n + result.insertId);
+                        if(transaction) {
+                            const results = await executeCommand(transaction, cmd, argMap);
+                            const insertIdResults = await executeCommand(connection, `SELECT SCOPE_IDENTITY() AS insertId`);
+                            return Array.from(Array(results?.rowsAffected).keys()).map((_, n) => n + insertIdResults?.recordsets[0].insertId);
+                        } else {
+                            const results = await executeCommand(connection, cmd, argMap);
+                            const insertIdResults = await executeCommand(connection, `SELECT SCOPE_IDENTITY() AS insertId`);
+                            console.log(insertIdResults);
+                            return Array.from(Array(results?.rowsAffected).keys()).map((_, n) => n + insertIdResults?.recordsets[0].insertId);
+                        }
                     } catch(err) {
                         await transaction?.rollback();
                         throw handleError(err);
                     }
                 },
                 async forUpdate(cmd, args) {
+                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
-                        const [result] = /** @type {import('mysql2/promise').ResultSetHeader[]} */ (await connection.execute(cmd, args));
-                        return result.affectedRows;
+                        if(transaction) {
+                            const results = await executeCommand(transaction, cmd, argMap);
+                            return results ? results.rowsAffected[0] : 0
+                        } else {
+                            const results = await executeCommand(connection, cmd, argMap);
+                            return results ? results.rowsAffected[0] : 0
+                        }
                     } catch(err) {
                         await transaction?.rollback();
                         throw handleError(err);
                     }
                 },
                 async forDelete(cmd, args) {
+                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
-                        const [result] = /** @type {import('mysql2/promise').ResultSetHeader[]} */ (await connection.execute(cmd, args));
-                        return result.affectedRows;
+                        if(transaction) {
+                            const results = await executeCommand(transaction, cmd, argMap);
+                            return results ? results.rowsAffected[0] : 0
+                        } else {
+                            const results = await executeCommand(connection, cmd, argMap);
+                            return results ? results.rowsAffected[0] : 0
+                        }
                     } catch(err) {
                         await transaction?.rollback();
                         throw handleError(err);
                     }
                 },
                 async forTruncate(cmd, args) {
+                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
-                        const [result] = /** @type {import('mysql2/promise').ResultSetHeader[]} */ (await connection.execute(cmd, args));
-                        return result.affectedRows;
+                        if(transaction) {
+                            const results = await executeCommand(transaction, cmd, argMap);
+                            return results ? results.rowsAffected[0] : 0
+                        } else {
+                            const results = await executeCommand(connection, cmd, argMap);
+                            return results ? results.rowsAffected[0] : 0
+                        }
                     } catch(err) {
                         await transaction?.rollback();
                         throw handleError(err);
                     }
                 },
                 async forDescribe(cmd, args) {
-                    const [result] = /** @type {import('mysql2/promise').ResultSetHeader[]} */ (await connection.execute(cmd, args));
+                    const results = await executeCommand(connection, cmd);
+                    console.log(results);
                     /** @type {any} */
                     let set = {}
-                    for(const field in result) {
-                        let defaultValue = getDefaultValueFn(result[field].Type, result[field].Default, result[field].Extra);
-                        let type = result[field].Type.toLowerCase();
+                    for(const field in results) {
+                        let defaultValue = getDefaultValueFn(results[field].Type, results[field].Default, results[field].Extra);
+                        let type = results[field].Type.toLowerCase();
                         
                         loopThroughDataTypes:
-                        for (const dataType in mysqlDataTypes) {
-                            for(const dt of mysqlDataTypes[dataType]) {
+                        for (const dataType in mssqlDataTypes) {
+                            for(const dt of mssqlDataTypes[dataType]) {
                                 if(type.startsWith(dt)) {
                                     type = dataType;
                                     break loopThroughDataTypes;
@@ -139,13 +182,13 @@ export function adapter(connection) {
                             }
                         }
                         set[field] = {
-                            field: result[field].Field,
+                            field: results[field].Field,
                             table: "",
                             alias: "",
-                            isPrimary: result[field].Key === "PRI",
-                            isIdentity: result[field].Extra.includes("auto_increment"),
-                            isVirtual: result[field].Extra.includes("VIRTUAL"),
-                            isNullable: result[field].Null === "YES",
+                            isPrimary: results[field].Key === "PRI",
+                            isIdentity: results[field].Extra.includes("auto_increment"),
+                            isVirtual: results[field].Extra.includes("VIRTUAL"),
+                            isNullable: results[field].Null === "YES",
                             datatype: type,
                             defaultValue
                         };
@@ -157,7 +200,7 @@ export function adapter(connection) {
                     await transaction.begin();
                 },
                 async forTransactionEnd(cnn) {
-                    await transaction.commit();
+                    await transaction?.commit();
                     transaction = undefined;
                 }
             }
@@ -247,7 +290,7 @@ function handleError(originalError) {
 
 // Use {stringToCheck}.startsWith({dataType}) where {dataType} is one of the data types in the array for the respective data type used in Kinship.
 // e.g., let determinedDataType = mysqlDataTypes.string.filter(dt => s.startsWith(dt)).length > 0 ? "string" : ...
-const mysqlDataTypes = {
+const mssqlDataTypes = {
     string: [
         "char", "varchar", 
         "binary", "varbinary",
@@ -534,4 +577,29 @@ function getImplicitUpdate({ table, columns, where, implicit }) {
         cmd: `UPDATE ${table}\n\tSET\n\t\t${Object.keys(cases).map(k => `${escape(k)} = (${cases[k].cmd})`).join(',\n\t\t')}${cmdWhere}`,
         args: [...Object.keys(cases).flatMap(k => cases[k].args), ...cmdArgs]
     };
+}
+
+class KinshipMsSqlConnectionPool extends ConnectionPool {
+    /** @type {string} */ schema;
+    
+    /**
+     * @param {import('mssql').config} config 
+     * @param {string} schema
+     */
+    constructor(config, schema) {
+        super(config);
+        this.schema = schema;
+    }
+}
+
+/**
+ * Creates an MSSQL Connection Pool given a schema for the tables that are intended to be connected to.
+ * @param {import('mssql').config} config
+ * @param {string=} schema
+ * @returns {KinshipMsSqlConnectionPool}
+ */
+export function createMsSqlPool(config, schema="dbo") {
+    if(!schema) schema = "dbo";
+    const cp = new KinshipMsSqlConnectionPool(config, schema);
+    return cp;
 }

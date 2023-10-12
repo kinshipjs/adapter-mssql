@@ -2,14 +2,42 @@
 import { KinshipContext } from '@kinshipjs/core';
 import { adapter, createMsSqlPool } from '../src/index.js';
 
-const pool = createMsSqlPool({
+/**
+ * @typedef {object} User
+ * @prop {number=} Id
+ * @prop {string=} FirstName
+ * @prop {string} LastName
+ * @prop {number=} Age
+ * 
+ * @prop {Role[]=} Roles
+ */
+
+/**
+ * @typedef {object} Role
+ * @prop {number=} Id
+ * @prop {string=} Title
+ * @prop {string=} Description
+ * @prop {number=} UserId
+ */
+
+const pool = await createMsSqlPool({
     database: "kinship_test",
     server: "192.168.1.28",
     user: "sa",
     password: "mySuperSecretPassw0rd!",
     port: 15301,
+    options: {
+        encrypt: true,
+        trustServerCertificate: true
+    }
 });
 
 const connection = adapter(pool);
-/** @type {KinshipContext<import('../../core/test/test.js').User>} */
+/** @type {KinshipContext<User>} */
 const ctx = new KinshipContext(connection, "Auth.User");
+
+ctx.hasMany(m => m.Roles.fromTable("dbo.Role").withKeys("Id", "UserId"));
+
+const results = await ctx.include(m => m.Roles);
+
+console.log(results);

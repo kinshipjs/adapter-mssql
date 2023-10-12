@@ -1,12 +1,12 @@
 {
-    "name": "@kinshipjs/mysql2",
-    "version": "0.0.11-development",
-    "homepage": "https://github.com/kinshipjs/adapter-mysql",
+    "name": "@kinshipjs/mssql",
+    "version": "0.0.1-development",
+    "homepage": "https://github.com/kinshipjs/adapter-mssql",
     "repository": {
         "type": "git",
-        "url": "https://github.com/kinshipjs/adapter-mysql"
+        "url": "https://github.com/kinshipjs/adapter-mssql"
     },
-    "description": "MySQL adapter for the Kinship ORM using the NodeJS mysql2 library.",
+    "description": "MSSQL (SQL Server) adapter for the Kinship ORM using the NodeJS mssql library.",
     "type": "module",
     "module": "./dist/index.js",
     "types": "./dist/types/index.d.ts",

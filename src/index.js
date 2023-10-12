@@ -18,57 +18,65 @@ function getType(val) {
 
 /**
  * Executes a prepared statement as a command.
- * @param {KinshipMsSqlConnectionPool|import("mssql").Transaction} connection
- * @param {string} command 
- * @param {{[key: string]: { type: import('mssql').ISqlTypeFactory, value: any }}} args 
+ * @param {mssql.ConnectionPool|mssql.Transaction} connection
+ * @param {string} cmd 
+ * @param {any[]} argsArray
  * @returns {Promise<import('mssql').IProcedureResult<any>|undefined>}
  */
-function executeCommand(connection, command, args={}) {
+async function executeCommand(connection, cmd, argsArray=[]) {
+    /** @type {{[key: string]: { type: mssql.ISqlTypeFactory, value: any }}} */
+    const args = Object.fromEntries(argsArray.map((a,n) => [`arg${n}`, { type: getType(a), value: a }]));
+    cmd = argsArray.reduce((cmd, _, n) => cmd.replace("?", `@arg${n}`), cmd);
     return new Promise(async (resolve, reject) => {
-        /** @type {mssql.PreparedStatement} */
-        let ps;
-        if(connection instanceof mssql.Transaction) {
-            ps = new mssql.PreparedStatement(connection);
-        } else {
-            ps = new mssql.PreparedStatement(connection.pool);
-        }
-        for(const key in args) {
-            ps.input(key, { type: args[key].type });
-        }
-        ps.prepare(command, err => {
-            console.log("1???");
-            const nameToValueMap = Object.fromEntries(Object.keys(args).map(k => [k, args[k].value]));
-            ps.execute(nameToValueMap, (err, result) => {
-                console.log("2???");
-                ps.unprepare(err => {
-                    reject(err);
-                });
-
-                if(err) {
-                    reject(err);
-                } else {
-                    resolve(result);
+        /** @type {mssql.PreparedStatement=} */
+        let ps = undefined;
+        try {
+            if(connection instanceof mssql.Transaction) {
+                ps = new mssql.PreparedStatement(connection);
+            } else {
+                ps = new mssql.PreparedStatement(connection);
+            }
+            for(const key in args) {
+                if(args[key].value === null) {
+                    cmd = cmd.replace(`@${key}`, 'NULL');
                 }
-            });
-        });
+                ps = ps.input(key, { type: args[key].type });
+            }
+            console.log(cmd, argsArray);
+            await ps.prepare(cmd);
+            const nameToValueMap = Object.fromEntries(Object.keys(args).map(k => [k, args[k].value]));
+            const results = await ps.execute(nameToValueMap);
+            resolve(results);
+        } catch(err) {
+            reject(err);
+        } finally {
+            if(ps) {
+                await ps.unprepare();
+            }
+        }
     });
 }
 
 /**
  * 
  * @param {string} tableOrColumn 
+ * @param {boolean} ignoreSchema
  * @returns {string}
  */
-function escape(tableOrColumn) {
+function escape(tableOrColumn, ignoreSchema=false) {
+    if(tableOrColumn.startsWith("MAX") || tableOrColumn.startsWith("MIN") || tableOrColumn.startsWith("SUM") || tableOrColumn.startsWith("COUNT") || tableOrColumn.startsWith("AVG")) {
+        return tableOrColumn;
+    }
     tableOrColumn = tableOrColumn.replaceAll("[", "").replaceAll("]", "");
     if(tableOrColumn.includes(".")) {
         const [schema, table] = tableOrColumn.split(".");
+        if(ignoreSchema) return `[${table}]`;
         return `[${schema}].[${table}]`;
     }
     return `[${tableOrColumn}]`;
 }
 
-/** @type {import('@kinshipjs/core/adapter').InitializeAdapterCallback<KinshipMsSqlConnectionPool>} */
+/** @type {import('@kinshipjs/core/adapter').InitializeAdapterCallback<mssql.ConnectionPool>} */
 export function adapter(connection) {
     /** @type {import('mssql').Transaction=} */
     let transaction;
@@ -78,23 +86,22 @@ export function adapter(connection) {
         },
         aggregates: {
             total: "COUNT(*)",
-            count: (table, col) => `COUNT(DISTINCT ${escape(connection.schema)}.${escape(table)}.${escape(col)})`,
-            avg: (table, col) => `AVG(${escape(connection.schema)}.${escape(table)}.${escape(col)})`,
-            max: (table, col) => `MAX(${escape(connection.schema)}.${escape(table)}.${escape(col)})`,
-            min: (table, col) => `MIN(${escape(connection.schema)}.${escape(table)}.${escape(col)})`,
-            sum: (table, col) => `SUM(${escape(connection.schema)}.${escape(table)}.${escape(col)})`
+            count: (table, col) => `COUNT(DISTINCT ${escape(table, true)}.${escape(col)})`,
+            avg: (table, col) => `AVG(${escape(table, true)}.${escape(col)})`,
+            max: (table, col) => `MAX(${escape(table, true)}.${escape(col)})`,
+            min: (table, col) => `MIN(${escape(table, true)}.${escape(col)})`,
+            sum: (table, col) => `SUM(${escape(table, true)}.${escape(col)})`
         },
         execute(scope) {
             return {
                 async forQuery(cmd, args) {
-                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
                         if(transaction) {
-                            const results = await executeCommand(transaction, cmd, argMap);
-                            return /** @type {any} */ (results?.recordsets);
+                            const results = await executeCommand(transaction, cmd, args);
+                            return /** @type {any} */ (results?.recordsets[0]);
                         } else {
-                            const results = await executeCommand(connection, cmd, argMap);
-                            return /** @type {any} */ (results?.recordsets);
+                            const results = await executeCommand(connection, cmd, args);
+                            return /** @type {any} */ (results?.recordsets[0]);
                         }
                     } catch(err) {
                         await transaction?.rollback();
@@ -102,17 +109,15 @@ export function adapter(connection) {
                     }
                 },
                 async forInsert(cmd, args) {
-                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
                         if(transaction) {
-                            const results = await executeCommand(transaction, cmd, argMap);
-                            const insertIdResults = await executeCommand(connection, `SELECT SCOPE_IDENTITY() AS insertId`);
-                            return Array.from(Array(results?.rowsAffected).keys()).map((_, n) => n + insertIdResults?.recordsets[0].insertId);
+                            const results = await executeCommand(connection, `${cmd};SELECT SCOPE_IDENTITY() AS insertId;`, args);
+                            const firstInsertId = (results?.recordsets[0][0].insertId - (results?.rowsAffected[0] ?? 0));
+                            return Array.from(Array(results?.rowsAffected[0]).keys()).map((_, n) => (n+1) + firstInsertId);
                         } else {
-                            const results = await executeCommand(connection, cmd, argMap);
-                            const insertIdResults = await executeCommand(connection, `SELECT SCOPE_IDENTITY() AS insertId`);
-                            console.log(insertIdResults);
-                            return Array.from(Array(results?.rowsAffected).keys()).map((_, n) => n + insertIdResults?.recordsets[0].insertId);
+                            const results = await executeCommand(connection, `${cmd};SELECT SCOPE_IDENTITY() AS insertId;`, args);
+                            const firstInsertId = (results?.recordsets[0][0].insertId - (results?.rowsAffected[0] ?? 0));
+                            return Array.from(Array(results?.rowsAffected[0]).keys()).map((_, n) => (n+1) + firstInsertId);
                         }
                     } catch(err) {
                         await transaction?.rollback();
@@ -120,13 +125,12 @@ export function adapter(connection) {
                     }
                 },
                 async forUpdate(cmd, args) {
-                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
                         if(transaction) {
-                            const results = await executeCommand(transaction, cmd, argMap);
+                            const results = await executeCommand(transaction, cmd, args);
                             return results ? results.rowsAffected[0] : 0
                         } else {
-                            const results = await executeCommand(connection, cmd, argMap);
+                            const results = await executeCommand(connection, cmd, args);
                             return results ? results.rowsAffected[0] : 0
                         }
                     } catch(err) {
@@ -135,13 +139,12 @@ export function adapter(connection) {
                     }
                 },
                 async forDelete(cmd, args) {
-                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
                         if(transaction) {
-                            const results = await executeCommand(transaction, cmd, argMap);
+                            const results = await executeCommand(transaction, cmd, args);
                             return results ? results.rowsAffected[0] : 0
                         } else {
-                            const results = await executeCommand(connection, cmd, argMap);
+                            const results = await executeCommand(connection, cmd, args);
                             return results ? results.rowsAffected[0] : 0
                         }
                     } catch(err) {
@@ -150,13 +153,12 @@ export function adapter(connection) {
                     }
                 },
                 async forTruncate(cmd, args) {
-                    const argMap = Object.fromEntries(args.map((a,n) => [`arg_${n}`, { type: getType(a), value: a }]));
                     try {
                         if(transaction) {
-                            const results = await executeCommand(transaction, cmd, argMap);
+                            const results = await executeCommand(transaction, cmd, args);
                             return results ? results.rowsAffected[0] : 0
                         } else {
-                            const results = await executeCommand(connection, cmd, argMap);
+                            const results = await executeCommand(connection, cmd, args);
                             return results ? results.rowsAffected[0] : 0
                         }
                     } catch(err) {
@@ -166,12 +168,11 @@ export function adapter(connection) {
                 },
                 async forDescribe(cmd, args) {
                     const results = await executeCommand(connection, cmd);
-                    console.log(results);
                     /** @type {any} */
                     let set = {}
-                    for(const field in results) {
-                        let defaultValue = getDefaultValueFn(results[field].Type, results[field].Default, results[field].Extra);
-                        let type = results[field].Type.toLowerCase();
+                    for(const field of results?.recordset ?? []) {
+                        let defaultValue = getDefaultValueFn(field.Type, field.Default);
+                        let type = field.Type.toLowerCase();
                         
                         loopThroughDataTypes:
                         for (const dataType in mssqlDataTypes) {
@@ -182,22 +183,23 @@ export function adapter(connection) {
                                 }
                             }
                         }
-                        set[field] = {
-                            field: results[field].Field,
+                        set[field.Field] = {
+                            field: field.Field,
                             table: "",
                             alias: "",
-                            isPrimary: results[field].Key === "PRI",
-                            isIdentity: results[field].Extra.includes("auto_increment"),
-                            isVirtual: results[field].Extra.includes("VIRTUAL"),
-                            isNullable: results[field].Null === "YES",
+                            isPrimary: field.Key !== null,
+                            isIdentity: field.Identity,
+                            isVirtual: field.Identity,
+                            isNullable: field.Null === 'YES',
                             datatype: type,
                             defaultValue
                         };
                     }
+                    console.log(JSON.stringify(set, undefined, 2));
                     return set;
                 },
                 async forTransactionBegin() {
-                    transaction = connection.pool.transaction();
+                    transaction = connection.transaction();
                     await transaction.begin();
                 },
                 async forTransactionEnd(cnn) {
@@ -209,13 +211,13 @@ export function adapter(connection) {
         serialize() {
             return {
                 forQuery(data) {
-                    const selects = getSelects(connection.schema, data.select);
-                    const from = getFrom(connection.schema, data.from, data.limit, data.offset);
-                    const where = getWhere(connection.schema, data.where);
-                    const groupBy = getGroupBy(connection.schema, data.group_by);
-                    const orderBy = getOrderBy(connection.schema, data.order_by);
-                    const limit = getLimit(connection.schema, data.limit);
-                    const offset = getOffset(connection.schema, data.offset);
+                    const selects = getSelects(data.select);
+                    const from = getFrom(data.from, data.limit, data.offset);
+                    const where = getWhere(data.where);
+                    const groupBy = getGroupBy(data.group_by);
+                    const orderBy = getOrderBy(data.order_by);
+                    const limit = getLimit(data.limit);
+                    const offset = getOffset(data.offset);
                     /** @type {any[]} */
                     let args = [];
                     let cmd = "";
@@ -230,15 +232,15 @@ export function adapter(connection) {
                             orderBy.args
                         ]);
                     } else {
-                        cmd = `SELECT ${selects.cmd}\n\tFROM ${from.cmd}${where.cmd}${offset.cmd}${limit.cmd}${groupBy.cmd}${orderBy.cmd}`;
+                        cmd = `SELECT ${selects.cmd}\n\tFROM ${from.cmd}${where.cmd}${orderBy.cmd}${offset.cmd}${limit.cmd}${groupBy.cmd}`;
                         args = args.concat(...[
                             selects.args, 
                             from.args, 
                             where.args,
+                            orderBy.args,
                             offset.args, 
                             limit.args, 
                             groupBy.args, 
-                            orderBy.args
                         ]);
                     }
 
@@ -252,7 +254,7 @@ export function adapter(connection) {
                     let args = [];
                     const { table, columns, values } = data;
                     args = values.flat();
-                    cmd += `INSERT INTO ${table} (${columns.join(', ')})\n\tVALUES\n\t\t${values.flatMap(v => `(${Array.from(Array(v.length).keys()).map(_ => '?')})`).join('\n\t\t,')}`;
+                    cmd += `INSERT INTO ${escape(table)} (${columns.map(c => escape(c)).join(', ')})\n\tVALUES\n\t\t${values.flatMap(v => `(${Array.from(Array(v.length).keys()).map(_ => '?')})`).join('\n\t\t,')}`;
                     return { cmd: cmd, args: args };
                 },
                 forUpdate(data) {
@@ -267,13 +269,32 @@ export function adapter(connection) {
                 forDelete(data) {
                     const { table, where } = data;
                     const { cmd, args } = handleWhere(where);
-                    return { cmd: `DELETE FROM ${table} ${cmd}`, args };
+                    return { cmd: `DELETE FROM ${escape(table)} ${cmd}`, args };
                 },
                 forTruncate(data) {
-                    return { cmd: `TRUNCATE ${data.table}`, args: [] };
+                    return { cmd: `TRUNCATE ${escape(data.table)}`, args: [] };
                 },
                 forDescribe(table) {
-                    return { cmd: `DESCRIBE ${table};`, args: [] };
+                    const [sch, tab] = table.replaceAll("[", "").replaceAll("]", "").split(".");
+                    return { cmd: `SELECT SC.[COLUMN_NAME] AS [Field],
+	SC.[IS_NULLABLE] AS [Null],
+	SC.[DATA_TYPE] AS [Type],
+    SC.[COLUMN_DEFAULT] AS [Default],
+	C.[is_identity] AS [Identity],
+	IC.[object_id] AS [Key]
+  from (
+		SELECT C.*
+			FROM information_schema.columns C
+			WHERE C.[TABLE_SCHEMA] = '${sch}'
+				AND C.[TABLE_NAME] = '${tab}'
+	) SC 
+	LEFT JOIN sys.columns C 
+		ON SC.[COLUMN_NAME] = C.[name]
+    LEFT JOIN sys.key_constraints KC
+		ON KC.[parent_object_id] = C.[object_id] AND kc.type = 'PK'
+    LEFT JOIN sys.index_columns IC 
+		ON KC.[parent_object_id] = IC.[object_id]  AND KC.unique_index_id = IC.index_id AND IC.column_id = C.column_id
+ WHERE C.object_id = OBJECT_ID('${sch}.${tab}');`, args: [] };
                 }
             }
         }
@@ -348,7 +369,7 @@ function handleWhere(conditions, table="", sanitize=(n) => `?`) {
 
             // edge case: BETWEEN operator.
             if(nextCond.operator === "BETWEEN") {
-                const column = `${escape(nextCond.table)}.${escape(nextCond.property)}`;
+                const column = `${escape(nextCond.table, true)}.${escape(nextCond.property)}`;
                 const lowerBound = sanitize(args.length);
                 const upperBound = sanitize(args.length+1);
                 const reduceStart = `${nextCond.chain} (${column} ${nextCond.operator} ${lowerBound} AND ${upperBound}`;
@@ -365,7 +386,7 @@ function handleWhere(conditions, table="", sanitize=(n) => `?`) {
                 args.push(nextCond.value);
                 value = sanitize(args.length);
             }
-            const column = `${escape(nextCond.table)}.${escape(nextCond.property)}`;
+            const column = `${escape(nextCond.table, true)}.${escape(nextCond.property)}`;
             const reduceStart = `${nextCond.chain} (${column} ${nextCond.operator} ${value}`;
             const reduced = remainder.reduce((a, b) => {
                 return reduce(a, b, depth + 1);
@@ -376,7 +397,7 @@ function handleWhere(conditions, table="", sanitize=(n) => `?`) {
         
         // edge case: BETWEEN operator.
         if(cond.operator === "BETWEEN") {
-            const column = `${escape(cond.table)}.${escape(cond.property)}`;
+            const column = `${escape(cond.table, true)}.${escape(cond.property)}`;
             const lowerBound = sanitize(args.length);
             const upperBound = sanitize(args.length+1);
             const cmd = prevStr + `${cond.chain} ${column} ${cond.operator} ${lowerBound} AND ${upperBound}\n${tabs}`;
@@ -393,7 +414,7 @@ function handleWhere(conditions, table="", sanitize=(n) => `?`) {
             args.push(cond.value);
             value = sanitize(args.length);
         }
-        const column = `${escape(cond.table)}.${escape(cond.property)}`;
+        const column = `${escape(cond.table, true)}.${escape(cond.property)}`;
         const cmd = prevStr + `${cond.chain} ${column} ${cond.operator} ${value}\n${tabs}`;
         return cmd;
     };
@@ -413,14 +434,7 @@ function handleWhere(conditions, table="", sanitize=(n) => `?`) {
     };
 }
 
-function getDefaultValueFn(type, defaultValue, extra) {
-    if(extra.includes("DEFAULT_GENERATED")) {
-        switch(defaultValue) {
-            case "CURRENT_TIMESTAMP": {
-                return () => new Date;
-            }
-        }
-    }
+function getDefaultValueFn(type, defaultValue) {
     if(defaultValue !== null) {
         if(type.includes("tinyint")) {
             defaultValue = parseInt(defaultValue) === 1;
@@ -432,20 +446,24 @@ function getDefaultValueFn(type, defaultValue, extra) {
             defaultValue = Date.parse(defaultValue);
         } else if(type.includes("int")) {
             defaultValue = parseInt(defaultValue);
+        } else {
+            if(defaultValue === "getDate()") {
+                return () => new Date();
+            }
         }
     }
     return () => defaultValue;
 }
 
-function getSelects(schema, select) {
+function getSelects(select) {
     const cols = select.map(prop => {
         if(prop.alias === '') {
             return ``;
         }
         if(!("aggregate" in prop)) {
-            return `${escape(schema)}.${escape(prop.table)}.${escape(prop.column)} AS ${escape(prop.alias)}`;
+            return `${escape(prop.table, true)}.${escape(prop.column)} AS ${escape(prop.alias)}`;
         }
-        return `${prop.column} AS ${escape(prop.alias)}`;
+        return `${escape(prop.column)} AS ${escape(prop.alias)}`;
     }).join('\n\t\t,');
     return {
         cmd: `${cols}`,
@@ -453,7 +471,7 @@ function getSelects(schema, select) {
     };
 }
 
-function getLimit(schema, limit) {
+function getLimit(limit) {
     if(!limit) return { cmd: "", args: [] };
     return {
         cmd: `\n\tFETCH NEXT ? ROWS ONLY`,
@@ -461,7 +479,7 @@ function getLimit(schema, limit) {
     };
 }
 
-function getOffset(schema, offset) {
+function getOffset(offset) {
     if(!offset) return { cmd: "", args: [] };
     return {
         cmd: `\n\tOFFSET ? ROWS`,
@@ -469,7 +487,7 @@ function getOffset(schema, offset) {
     };
 }
 
-function getFrom(schema, from, limit, offset) {
+function getFrom(from, limit, offset) {
     let cmd = "";
     let args = [];
     if(from.length > 1) {
@@ -478,26 +496,26 @@ function getFrom(schema, from, limit, offset) {
         if(limit) {
             const limitCmd = getLimit(limit);
             const offsetCmd = getOffset(offset);
-            const mainSubQuery = `(SELECT * FROM ${escape(schema)}.${escape(main.realName)} ${limitCmd.cmd} ${offsetCmd.cmd}) AS ${escape(main.alias)}`;
+            const mainSubQuery = `(SELECT * FROM ${escape(main.realName)} ${limitCmd.cmd} ${offsetCmd.cmd}) AS ${escape(main.alias, true)}`;
             args = args.concat(limitCmd.args, offsetCmd.args);
             joiningTables.push(mainSubQuery);
         } else {
-            joiningTables.push(`${escape(schema)}.${escape(main.realName)} AS ${escape(main.alias)}`);
+            joiningTables.push(`${escape(main.realName)} AS ${escape(main.alias, true)}`);
         }
 
         cmd = joiningTables.concat(joins.map(table => {
-            const nameAndAlias = `${escape(table.realName)} AS ${escape(table.alias)}`;
-            const onRefererKey = `${escape(table.refererTableKey.table)}.${escape(table.refererTableKey.column)}`;
-            const onReferenceKey = `${escape(table.referenceTableKey.table)}.${escape(table.referenceTableKey.column)}`;
+            const nameAndAlias = `${escape(table.realName)} AS ${escape(table.alias, true)}`;
+            const onRefererKey = `${escape(table.refererTableKey.table, true)}.${escape(table.refererTableKey.column)}`;
+            const onReferenceKey = `${escape(table.referenceTableKey.table, true)}.${escape(table.referenceTableKey.column)}`;
             return `${nameAndAlias}\n\t\t\tON ${onRefererKey} = ${onReferenceKey}`;
-        })).join('\n\t\tLEFT JOIN');
+        })).join('\n\t\tLEFT JOIN ');
     } else {
-        cmd = `${escape(from[0].realName)} AS ${escape(from[0].alias)}`
+        cmd = `${escape(from[0].realName)} AS ${escape(from[0].alias, true)}`
     }
     return { cmd, args };
 }
 
-function getGroupBy(schema, group_by) {
+function getGroupBy(group_by) {
     if(!group_by) return { cmd: "", args: [] };
     return {
         cmd: '\n\tGROUP BY ' + group_by.map(prop => `${escape(prop.alias)}`).join('\n\t\t,'),
@@ -505,7 +523,7 @@ function getGroupBy(schema, group_by) {
     };
 }
 
-function getOrderBy(schema, order_by) {
+function getOrderBy(order_by) {
     if(!order_by) return { cmd: "", args: [] };
     return {
         cmd: '\n\tORDER BY ' + order_by.map(prop => `${escape(prop.alias)}`).join('\n\t\t,'),
@@ -513,7 +531,7 @@ function getOrderBy(schema, order_by) {
     };
 }
 
-function getWhere(schema, where) {
+function getWhere(where) {
     if(!where) return { cmd: "", args: [] };
     const whereInfo = handleWhere(where);
     return {
@@ -533,7 +551,7 @@ function getExplicitUpdate({ table, columns, where, explicit }) {
 
     const setValues = `\n\t\t${values.map((v,n) => `${columns[n]} = ?`).join('\n\t\t,')}`;
     return {
-        cmd: `UPDATE ${table}\n\tSET${setValues}${cmdWhere}`,
+        cmd: `UPDATE ${escape(table)}\n\tSET${setValues}${cmdWhere}`,
         args: values.concat(cmdArgs)
     }
 }
@@ -575,34 +593,18 @@ function getImplicitUpdate({ table, columns, where, implicit }) {
     }
     const { cmd: cmdWhere, args: cmdArgs } = getWhere(where);
     return {
-        cmd: `UPDATE ${table}\n\tSET\n\t\t${Object.keys(cases).map(k => `${escape(k)} = (${cases[k].cmd})`).join(',\n\t\t')}${cmdWhere}`,
+        cmd: `UPDATE ${escape(table)}\n\tSET\n\t\t${Object.keys(cases).map(k => `${escape(k)} = (${cases[k].cmd})`).join(',\n\t\t')}${cmdWhere}`,
         args: [...Object.keys(cases).flatMap(k => cases[k].args), ...cmdArgs]
     };
-}
-
-class KinshipMsSqlConnectionPool {
-    /** @type {string} */ schema;
-    /** @type {mssql.ConnectionPool} */ pool;
-    
-    /**
-     * @param {import('mssql').config} config 
-     * @param {string} schema
-     */
-    constructor(config, schema) {
-        this.pool = new mssql.ConnectionPool(config);
-        this.schema = schema;
-    }
 }
 
 /**
  * Creates an MSSQL Connection Pool given a schema for the tables that are intended to be connected to.
  * @param {import('mssql').config} config
- * @param {string=} schema
- * @returns {Promise<KinshipMsSqlConnectionPool>}
+ * @returns {Promise<mssql.ConnectionPool>}
  */
-export async function createMsSqlPool(config, schema="dbo") {
-    if(!schema) schema = "dbo";
-    const cp = new KinshipMsSqlConnectionPool(config, schema);
-    await cp.pool.connect();
+export async function createMsSqlPool(config) {
+    const cp = new mssql.ConnectionPool(config);
+    await cp.connect();
     return cp;
 }

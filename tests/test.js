@@ -1,5 +1,5 @@
 //@ts-check
-import { KinshipContext } from '@kinshipjs/core';
+import { KinshipContext, transaction } from '@kinshipjs/core';
 import { adapter, createMsSqlPool } from '../src/index.js';
 
 /**
@@ -36,8 +36,6 @@ const connection = adapter(pool);
 /** @type {KinshipContext<User>} */
 const ctx = new KinshipContext(connection, "Auth.User");
 
-ctx.hasMany(m => m.Roles.fromTable("dbo.Role").withKeys("Id", "UserId"));
-
-const results = await ctx.include(m => m.Roles);
-
-console.log(results);
+await transaction(ctx).execute(async ctx => {
+    await ctx;
+});

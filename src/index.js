@@ -1,13 +1,32 @@
 // @ts-check
 import mssql from 'mssql';
 
+// polyfill for checking if number is Integer
+
+Number.isInteger = Number.isInteger || function(value) {
+    return typeof value === 'number' && 
+        isFinite(value) && 
+        Math.floor(value) === value;
+};
+  
+
+/**
+ * @param {number} value
+ */
+Number.isSafeInteger = Number.isSafeInteger || function (value) {
+    return Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
+};
+
 function getType(val) {
     switch(typeof val) {
         case "number": {
-            if(val > 2147483648 || val < -2147483648) {
-                return mssql.BigInt
+            if (Number.isSafeInteger(val)) {
+                if (val > 2147483648 || val < -2147483648) {
+                    return mssql.BigInt;
+                }
+                return mssql.Int;
             }
-            return mssql.Int;
+            return mssql.Float;
         }
         case "string": return mssql.VarChar;
         case "bigint": return mssql.BigInt;

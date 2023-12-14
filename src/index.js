@@ -110,8 +110,6 @@ function getDateString(date) {
 
 /** @type {import('@kinshipjs/core/adapter').InitializeAdapterCallback<mssql.ConnectionPool>} */
 export function adapter(connection) {
-    /** @type {import('mssql').Transaction=} */
-    let transaction;
     return {
         syntax: {
             dateString: getDateString
@@ -128,7 +126,7 @@ export function adapter(connection) {
             return {
                 async forQuery(cmd, args) {
                     try {
-                        const results = await executeCommand(transaction ?? connection, cmd, args);
+                        const results = await executeCommand(connection, cmd, args);
                         return /** @type {any} */ (results?.recordsets[0]);
                     } catch(err) {
                         throw handleError(err);
@@ -136,7 +134,7 @@ export function adapter(connection) {
                 },
                 async forInsert(cmd, args) {
                     try {
-                        const results = await executeCommand(transaction ?? connection, `${cmd};SELECT SCOPE_IDENTITY() AS insertId;`, args);
+                        const results = await executeCommand(scope.transaction ?? connection, `${cmd};SELECT SCOPE_IDENTITY() AS insertId;`, args);
                         const firstInsertId = (results?.recordsets[0][0].insertId - (results?.rowsAffected[0] ?? 0));
                         return Array.from(Array(results?.rowsAffected[0]).keys()).map((_, n) => (n+1) + firstInsertId);
                     } catch(err) {
@@ -145,7 +143,7 @@ export function adapter(connection) {
                 },
                 async forUpdate(cmd, args) {
                     try {
-                        const results = await executeCommand(transaction ?? connection, cmd, args);
+                        const results = await executeCommand(scope.transaction ?? connection, cmd, args);
                         return results ? results.rowsAffected[0] : 0
                     } catch(err) {
                         throw handleError(err);
@@ -153,7 +151,7 @@ export function adapter(connection) {
                 },
                 async forDelete(cmd, args) {
                     try {
-                        const results = await executeCommand(transaction ?? connection, cmd, args);
+                        const results = await executeCommand(scope.transaction ?? connection, cmd, args);
                         return results ? results.rowsAffected[0] : 0
                     } catch(err) {
                         throw handleError(err);
@@ -161,7 +159,7 @@ export function adapter(connection) {
                 },
                 async forTruncate(cmd, args) {
                     try {
-                        const results = await executeCommand(transaction ?? connection, cmd, args);
+                        const results = await executeCommand(scope.transaction ?? connection, cmd, args);
                         return results ? results.rowsAffected[0] : 0
                     } catch(err) {
                         throw handleError(err);
@@ -199,16 +197,16 @@ export function adapter(connection) {
                     return set;
                 },
                 async forTransaction() {
-                    const transaction = connection.transaction();
                     return {
-                        transaction: transaction,
                         begin: async () => {
+                            const transaction = connection.transaction();
                             await transaction.begin();
+                            return transaction;
                         },
-                        commit: async () => {
+                        commit: async (transaction) => {
                             await transaction.commit();
                         },
-                        rollback: async () => {
+                        rollback: async (transaction) => {
                             await transaction.rollback();
                         }
                     };

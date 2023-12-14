@@ -199,20 +199,17 @@ export function adapter(connection) {
                     return set;
                 },
                 async forTransaction() {
-                    transaction = connection.transaction();
-                    await transaction.begin();
+                    const transaction = connection.transaction();
                     return {
+                        transaction: transaction,
+                        begin: async () => {
+                            await transaction.begin();
+                        },
                         commit: async () => {
-                            if(transaction) {
-                                await transaction.commit();
-                            }
-                            transaction = undefined;
+                            await transaction.commit();
                         },
                         rollback: async () => {
-                            if(transaction) {
-                                await transaction.rollback();
-                            }
-                            transaction = undefined;
+                            await transaction.rollback();
                         }
                     };
                 }

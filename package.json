@@ -1,6 +1,6 @@
 {
     "name": "@kinshipjs/mssql",
-    "version": "0.0.32-development",
+    "version": "0.0.35-development",
     "homepage": "https://github.com/kinshipjs/adapter-mssql",
     "repository": {
         "type": "git",
@@ -31,11 +31,11 @@
     "author": "Travis Zuleger",
     "license": "(MIT OR Apache-2.0)",
     "dependencies": {
-        "@kinshipjs/core": "^0.0.45-development",
+        "@kinshipjs/core": "^0.0.48-development",
+        "@types/mssql": "^9.1.1",
         "mssql": "^10.0.1"
     },
     "devDependencies": {
-        "@types/mssql": "^9.1.1",
         "@types/node": "^20.3.1",
         "dotenv": "^16.0.3",
         "tsup": "^7.2.0",

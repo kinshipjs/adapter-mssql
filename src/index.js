@@ -339,7 +339,7 @@ function handleError(originalError) {
 // e.g., let determinedDataType = mysqlDataTypes.string.filter(dt => s.startsWith(dt)).length > 0 ? "string" : ...
 const mssqlDataTypes = {
     string: [
-        "char", "varchar", 
+        "char", "varchar", "nvarchar",
         "binary", "varbinary",
         "tinyblob", "mediumblob", "longblob", "blob",
         "tinytext", "mediumtext", "longtext", "text",
@@ -356,6 +356,7 @@ const mssqlDataTypes = {
         "dec"
     ],
     boolean: [
+        "bit",
         "bit(1)",
         "bool",
         "boolean"

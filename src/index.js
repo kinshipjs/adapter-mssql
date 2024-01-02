@@ -1,4 +1,5 @@
 // @ts-check
+import { KinshipNonUniqueKeyError, KinshipSyntaxError, KinshipUnhandledDBError, KinshipUnknownDBError, KinshipValueCannotBeNullError } from '@kinshipjs/core/errors';
 import mssql from 'mssql';
 
 // polyfill for checking if number is Integer
@@ -255,15 +256,15 @@ export function adapter(connection) {
                     } else {
                         // this will throw an error if order by, limit, or offset are used not in conjunction of eachother.
                         isOrderByFetchOffset(data.order_by, data.limit, data.offset);
-                        cmd = `SELECT ${selects.cmd}\n\tFROM ${from.cmd}${where.cmd}${orderBy.cmd}${offset.cmd}${limit.cmd}${groupBy.cmd}`;
+                        cmd = `SELECT ${selects.cmd}\n\tFROM ${from.cmd}${where.cmd}${groupBy.cmd}${orderBy.cmd}${offset.cmd}${limit.cmd}`;
                         args = args.concat(...[
                             selects.args, 
                             from.args, 
                             where.args,
+                            groupBy.args, 
                             orderBy.args,
                             offset.args, 
                             limit.args, 
-                            groupBy.args, 
                         ]);
                     }
 
@@ -295,7 +296,7 @@ export function adapter(connection) {
                     return { cmd: `DELETE FROM ${escape(table)} ${cmd}`, args };
                 },
                 forTruncate(data) {
-                    return { cmd: `TRUNCATE ${escape(data.table)}`, args: [] };
+                    return { cmd: `TRUNCATE TABLE ${escape(data.table)}`, args: [] };
                 },
                 forDescribe(table) {
                     const [sch, tab] = table.replaceAll("[", "").replaceAll("]", "").split(".");
@@ -330,6 +331,18 @@ export function adapter(connection) {
  * @returns {Error}
  */
 function handleError(originalError) {
+
+    if(originalError instanceof mssql.RequestError) {
+        const { number: code, message } = originalError;
+        switch(code) {
+            case 156: return new KinshipSyntaxError(message);
+            case 515: return new KinshipValueCannotBeNullError(code, message);
+            case 2627: return new KinshipNonUniqueKeyError(code, message);
+            case undefined: {
+                return new KinshipUnhandledDBError(`Unhandled error.`, -1, message);
+            }
+        }
+    }
     return originalError;
 }
 
@@ -508,6 +521,10 @@ function getSelects(select) {
         }
         if(!("aggregate" in prop)) {
             return `${escape(prop.table, true)}.${escape(prop.column)} AS ${escape(prop.alias)}`;
+        }
+        // AVG(CAST(column_name AS FLOAT))
+        if(!prop.column.startsWith("COUNT")) {
+            prop.column = prop.column.replace(/^(.*)\((.*)\)$/, "$1(CAST($2 AS float))");
         }
         return `${escape(prop.column)} AS ${escape(prop.alias)}`;
     }).join('\n\t\t,');

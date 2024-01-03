@@ -36,7 +36,7 @@
         "mssql": "^10.0.1"
     },
     "devDependencies": {
-        "@kinshipjs/adapter-tests": "^0.0.17",
+        "@kinshipjs/adapter-tests": "^0.2.4",
         "@types/node": "^20.3.1",
         "dotenv": "^16.0.3",
         "tsup": "^7.2.0",

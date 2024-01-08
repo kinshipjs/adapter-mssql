@@ -339,7 +339,7 @@ function handleError(originalError) {
             case 515: return new KinshipValueCannotBeNullError(code, message);
             case 2627: return new KinshipNonUniqueKeyError(code, message);
             case undefined: {
-                return new KinshipUnhandledDBError(`Unhandled error.`, -1, message);
+                return originalError;
             }
         }
     }

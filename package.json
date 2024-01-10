@@ -1,6 +1,6 @@
 {
     "name": "@kinshipjs/mssql",
-    "version": "0.3.0-beta.0",
+    "version": "0.3.0-rc0",
     "homepage": "https://github.com/kinshipjs/adapter-mssql",
     "repository": {
         "type": "git",

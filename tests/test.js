@@ -3,8 +3,7 @@ import { KinshipContext } from '@kinshipjs/core';
 import { adapter, createMsSqlPool } from '../src/index.js';
 import { testAdapter } from '@kinshipjs/adapter-tests';
 
-const pool = await createMsSqlPool({
-    database: "chinook_ks_test",
+const config = {
     server: "192.168.1.28",
     user: "sa",
     password: "mySuperSecretPassw0rd!",
@@ -13,6 +12,16 @@ const pool = await createMsSqlPool({
         encrypt: true,
         trustServerCertificate: true
     }
+};
+
+const pool = await createMsSqlPool({
+    database: "chinook_ks_test",
+    ...config
+});
+
+const chinookPool = await createMsSqlPool({
+    database: "chinook",
+    ...config
 });
 
 const connection = adapter(pool);
@@ -24,6 +33,9 @@ await testAdapter(connection, {
     playlistTracksTableName: "dbo.PlaylistTrack",
     tracksTableName: "dbo.Track",
     precision: 4
+}, {
+    printFail: true,
+    printSuccess: true
 });
 
 process.exit(1);

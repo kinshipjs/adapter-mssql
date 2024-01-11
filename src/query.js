@@ -1,26 +1,50 @@
 //@ts-check
 import { KinshipAdapterError } from "@kinshipjs/core/errors";
-import { escapeColumn, escapeTable, handleWhere, joinArguments, joinCommands } from "./utility.js";
+import { escapeColumn, escapeTable, handleWhere, joinArguments, joinCommands, mapFilter } from "./utility.js";
 
 /**
  * @param {import("@kinshipjs/core/adapter").SerializationQueryHandlerData} data 
  */
 export function forQuery(data) {
-    const $limit = handleLimit(data);
-    const $orderBy = handleOrderBy(data);
-    const $limitOffsetOrderBy = handleLimitOffsetOrderBy(data, { $orderBy });
+    const serializedData = getAllSerializedData(data);
+    return handleQuery(serializedData);
+}
+
+/**
+ * @param {import("@kinshipjs/core/adapter").SerializationQueryHandlerData} data 
+ * @returns {SerializedData}
+ */
+function getAllSerializedData(data) {
+    // handleFrom alters `data`, so it MUST be run before $orderBy, $limitOffsetOrderBy, and $limit.
+    const $from = handleFrom(data);
     const $where = handleWhere(data.where);
-    const $from = handleFrom(data, { $limit, $limitOffsetOrderBy });
     const $groupBy = handleGroupBy(data);
     const $select = handleSelect(data);
+    const $orderBy = handleOrderBy(data);
 
-    return handleQuery({ $from, $groupBy, $limit, $limitOffsetOrderBy, $orderBy, $select, $where });
+    let $limitOffsetOrderBy = undefined;
+    let $limit = undefined;
+    if(!shouldSubQuery(data)) {
+        $limitOffsetOrderBy = handleLimitOffsetOrderBy(data);
+        $limit = handleLimit(data);
+    }
+    return {
+        $from,
+        $groupBy,
+        $limit,
+        $limitOffsetOrderBy,
+        $orderBy,
+        $where,
+        $select
+    };
 }
 
 /**
  * @param {SerializedData} serializedData
+ * @param {number} nestLevel
+ * The level of nesting that is occuring (e.g., if there is a sub query, then the nestLevel would become 2, so indentation is properly managed.)
  */
-function handleQuery(serializedData) {
+function handleQuery(serializedData, nestLevel=1) {
     const { 
         $from,
         $groupBy,
@@ -61,28 +85,24 @@ function handleQuery(serializedData) {
         ];
     }
     
-    
     return {
-        cmd: joinCommands(cmds),
+        cmd: joinCommands(cmds, nestLevel),
         args: joinArguments(cmds)
     };
 }
 
 /**
  * @param {import("@kinshipjs/core/adapter").SerializationQueryHandlerData} data 
- * @param {SerializedData} serializedData
  */
-function handleFrom(data, serializedData) {
+function handleFrom(data) {
     const { from, group_by, limit, offset, order_by, select, where } = data;
-    const { $limit, $limitOffsetOrderBy } = serializedData;
     const [main, ...includes] = from;
     
     let tables = [];
     let args = [];
 
-    // if a limit, limit offset, order by, or where occurs when a join is occuring, then the main table should be sub-queried.
-    if(includes && includes.length > 0 && ($limit || $limitOffsetOrderBy || order_by || (where && where.length > 0))) {
-        const subQuery = getMainTableAsSubQuery(data, serializedData);
+    if(shouldSubQuery(data)) {
+        const subQuery = getMainTableAsSubQuery(data);
         tables.push(subQuery.cmd);
         args = args.concat(subQuery.args);
     } else {
@@ -134,12 +154,11 @@ function handleLimit(data) {
 
 /**
  * @param {import("@kinshipjs/core/adapter").SerializationQueryHandlerData} data 
- * @param {SerializedData} serializedData
+ * @param {string=} table
  */
-function handleLimitOffsetOrderBy(data, serializedData) {
+function handleLimitOffsetOrderBy(data, table=undefined) {
     const { from, group_by, limit, offset, order_by, select, where } = data;
-
-    const { $orderBy } = serializedData;
+    const $orderBy = handleOrderBy(data, table);
 
     if(limit && offset && $orderBy) {
         const limitCmd = `FETCH NEXT ? ROWS ONLY`;
@@ -162,11 +181,14 @@ function handleLimitOffsetOrderBy(data, serializedData) {
 function handleOrderBy(data, table=undefined) {
     const { from, group_by, limit, offset, order_by, select, where } = data;
     if(order_by) {
-        let orderBy = order_by;
-        if(table) {
-            orderBy = orderBy.filter(prop => prop.table === table);
+        // filter out props that are not part of this table.
+        let orderBy = !table ? order_by : order_by.filter(prop => {
+            return prop.table === table || prop.table.endsWith(table + "__");
+        });
+        if(orderBy.length <= 0) {
+            return undefined;
         }
-        const columns = orderBy.map(prop => `${escapeColumn(prop.alias)} ${prop.direction}`).join('\n\t\t,');
+        const columns = orderBy.map(prop => `${escapeTable(prop.table, table === undefined)}.${escapeColumn(prop.column)} ${prop.direction}`).join('\n\t\t,');
         return {
             cmd: `ORDER BY ${columns}`,
             args: []
@@ -203,24 +225,36 @@ function handleSelect(data) {
 /**
  * 
  * @param {import("@kinshipjs/core/adapter").SerializationQueryHandlerData} data 
- * @param {SerializedData} serializedData 
  */
-function getMainTableAsSubQuery(data, serializedData) {
+function getMainTableAsSubQuery(data) {
     const { from, group_by, limit, offset, order_by, select, where } = data;
     const [main, ...includes] = from;
 
-    const { $limit, $limitOffsetOrderBy, $orderBy } = serializedData;
-    
-    const $where = handleWhere(where, main.realName);
-    const $groupBy = { cmd: "", args: [] };
+    const $limit = handleLimit(data);
+    const $limitOffsetOrderBy = handleLimitOffsetOrderBy(data, main.realName);
+    const $where = handleWhere(where, main.realName, false);
+    const $groupBy = undefined;
+    const $orderBy = handleOrderBy(data, main.realName);
     const $select = { cmd: "*", args: [] };
-    const $from = { cmd: `${escapeTable(main.realName)} AS ${escapeTable(main.alias, true)}`, args: [] };
+    const $from = { cmd: `${escapeTable(main.realName)}`, args: [] };
 
-    const subQuery = handleQuery({ $from, $groupBy, $limit, $limitOffsetOrderBy, $orderBy, $select, $where });
+    const subQuery = handleQuery({ $from, $groupBy, $limit, $limitOffsetOrderBy, $orderBy, $select, $where }, 2);
     return {
-        cmd: `(${subQuery.cmd})`,
+        cmd: `(${subQuery.cmd}) AS ${escapeTable(main.alias, true)}`,
         args: subQuery.args
     };
+}
+
+/**
+ * @param {import("@kinshipjs/core/adapter").SerializationQueryHandlerData} data 
+ * @returns {boolean}
+ */
+function shouldSubQuery(data) {
+    const { from, group_by, limit, offset, order_by, select, where } = data;
+    const [main, ...includes] = from;
+    const $where = handleWhere(data.where, main.realName);
+    const $orderBy = handleOrderBy(data, main.realName);
+    return !!((includes && includes.length > 0) && (limit || offset || $where || $orderBy)); 
 }
 
 // ------------------------------------------- Types -------------------------------------------

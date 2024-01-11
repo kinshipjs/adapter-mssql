@@ -16,7 +16,7 @@ export function joinArguments(data) {
 /**
  * @param {(import('./query.js').CommandInfo|string|undefined)[]} data
  */
-export function joinCommands(data) {
+export function joinCommands(data, indentationCount=1) {
     const strings = [];
     for(const ci of data) {
         if(!ci) continue;
@@ -26,7 +26,8 @@ export function joinCommands(data) {
             strings.push(ci.cmd);
         }
     }
-    return strings.join('\n\t');
+    const indentation = Array.from(Array(indentationCount).keys()).map(() => `\t`).join('');
+    return strings.join(`\n${indentation}`);
 }
 
 /**
@@ -82,10 +83,14 @@ export function handleWhere(where, table=undefined, includeSchema=true) {
     });
 
     /** @type {string} */
-    const cmd = where
+    let cmd = where
         .map(prop => mapFilter(prop, table)) // map props that are not part of `table` to undefined.
         .filter(x => x !== undefined) // filter out undefined props
         .reduce((cmd, cond) => reduce(cmd, cond), ''); // reduce for the command.
+
+    if(/^\s*AND|OR.*$/.test(cmd)) {
+        cmd = cmd.replace(/^\s*AND|OR.*$/, "WHERE");
+    }
     return {
         cmd,
         args
@@ -162,6 +167,7 @@ function createReduce(
             const chain = condition[0].chain;
             condition[0].chain = "";
             const reduced = condition.reduce((command, condition) => reduce(command, condition, depth + 1), `${chain} (`);
+            condition[0].chain = chain;
             return `${command}${reduced})${prettify}`;
         }
         let {
@@ -198,12 +204,15 @@ function createReduce(
  * @param {import('@kinshipjs/core/adapter').WhereClausePropertyArray[number]} prop 
  * @param {string=} table
  */
-function mapFilter(prop, table=undefined) {
+export function mapFilter(prop, table=undefined) {
+    if(!table) {
+        return prop;
+    }
     if(Array.isArray(prop)) {
         const filtered = prop.map((prop) => mapFilter(prop, table)).filter(x => x !== undefined);
         return filtered.length > 0 ? filtered : undefined;
     }
-    if(!table || prop.table.endsWith(table + "__")) {
+    if(prop.table === table || prop.table.endsWith(table + "__")) {
         return prop;
     }
     return undefined;

@@ -165,7 +165,7 @@ function handleLimitOffsetOrderBy(data, table=undefined) {
         const offsetCmd = `OFFSET ? ROWS`;
         return {
             cmd: `${$orderBy.cmd}\n\t${offsetCmd}\n\t${limitCmd}`,
-            args: [...$orderBy.args, limit, offset]
+            args: [...$orderBy.args, offset, limit]
         };
     }
     if(offset) {
